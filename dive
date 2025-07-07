@@ -1,1 +1,126 @@
-a
+local WRK = game:GetService("Workspace")
+local VIM = game:GetService("VirtualInputManager")
+local UIS = game:GetService("UserInputService")
+local RS = game:GetService("RunService")
+local PLR = game:GetService("Players")
+local VIEW = WRK.CurrentCamera
+local localPlayer = PLR.LocalPlayer
+local avatar = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+local avatarController = avatar:WaitForChild("Humanoid", 5)
+local torso = avatar:WaitForChild("HumanoidRootPart", 5)
+if not avatarController or not torso then
+    warn("Avatar components missing - script termination")
+    return
+end
+
+local VELOCITY_LIMIT = 50
+local TAP_RANGE = 7
+local LUNGE_RANGE = 15
+local SCAN_DISTANCE = 30
+local LUNGE_DELAY = 2     
+local isKeyActive = false
+local movementLock = false
+local lastLungeTime = 0
+
+local function PredictImpactPoint(moveVector, startPosition)
+    local gravitationalPull = -WRK.Gravity
+    local trajectoryCalc = moveVector.Y^2 - 4 * 0.5 * gravitationalPull * startPosition.Y
+    if trajectoryCalc < 0 then return startPosition end
+    
+    local impactTime = (-moveVector.Y - math.sqrt(trajectoryCalc)) / (2 * 0.5 * gravitationalPull)
+    local horizontalMove = Vector3.new(moveVector.X, 0, moveVector.Z)
+    return startPosition + horizontalMove * impactTime + Vector3.new(0, -startPosition.Y, 0)
+end
+
+local function ToggleMovementLock(state)
+    movementLock = state
+    avatarController:SetAttribute("MovementRestricted", state)
+    avatarController.WalkToPoint = torso.Position 
+end
+
+local function SimulateCenterClick()
+    ToggleMovementLock(true)
+    
+    local displayCenter = Vector2.new(VIEW.ViewportSize.X/2, VIEW.ViewportSize.Y/2)
+    local success, errorInfo = pcall(function()
+        VIM:SendMouseButtonEvent(displayCenter.X, displayCenter.Y, 0, true, game, 0)
+        VIM:SendMouseButtonEvent(displayCenter.X, displayCenter.Y, 0, false, game, 0)
+    end)
+    
+    if not success then warn("Interaction simulation failed:", errorInfo) end
+    ToggleMovementLock(false)
+end
+
+local function ExecuteDiveAction(targetLocation)
+    if torso and targetLocation then
+        local originalOrientation = torso.CFrame - torso.Position
+        local horizontalDirection = (targetLocation - torso.Position).Unit
+        torso.CFrame = CFrame.new(torso.Position, torso.Position + Vector3.new(horizontalDirection.X, 0, horizontalDirection.Z))
+
+        ToggleMovementLock(true)
+
+        local operationSuccess = pcall(function()
+            VIM:SendKeyEvent(true, Enum.KeyCode.Three, false, game)
+            VIM:SendKeyEvent(false, Enum.KeyCode.Three, false, game)
+        end)
+        
+        if operationSuccess then
+            lastLungeTime = os.time()
+        else
+            warn("Lunge activation failed")
+        end
+
+        delay(0.3, function()
+            torso.CFrame = CFrame.new(torso.Position) * originalOrientation
+            ToggleMovementLock(false)
+        end)
+    end
+end
+
+local function IsDiveReady()
+    return os.time() - lastLungeTime >= LUNGE_DELAY
+end
+
+RS.Heartbeat:Connect(function()
+    if not isKeyActive or not avatar or not torso then return end
+
+    for _, soccerBall in ipairs(WRK:GetChildren()) do
+        if soccerBall:IsA("Model") and soccerBall.Name == "Ball" then
+            local ballCore = soccerBall:FindFirstChild("BallPart")
+            if ballCore then
+                local motionVector = soccerBall:FindFirstChild("Velocity")
+                if motionVector and motionVector:IsA("Vector3Value") then
+                    local currentVelocity = motionVector.Value
+                    if currentVelocity.Magnitude < VELOCITY_LIMIT then continue end
+
+                    local proximityCheck = (ballCore.Position - torso.Position).Magnitude
+                    if proximityCheck > SCAN_DISTANCE then continue end
+
+                    local impactPosition = PredictImpactPoint(currentVelocity, ballCore.Position)
+                    local distanceToImpact = (impactPosition - torso.Position).Magnitude
+
+                    if IsDiveReady() then
+                        if distanceToImpact <= TAP_RANGE then
+                            SimulateCenterClick()
+                        elseif distanceToImpact <= LUNGE_RANGE then
+                            ExecuteDiveAction(impactPosition)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, processed)
+    if not processed and input.KeyCode == Enum.KeyCode.LeftControl then
+        isKeyActive = true
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.LeftControl then
+        isKeyActive = false
+        ToggleMovementLock(false)
+    end
+end)
